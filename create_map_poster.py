@@ -2,6 +2,8 @@ import osmnx as ox
 import matplotlib.pyplot as plt
 from matplotlib.font_manager import FontProperties
 import matplotlib.colors as mcolors
+from matplotlib.path import Path
+import matplotlib.patches as mpatches
 import numpy as np
 from geopy.geocoders import Nominatim
 from tqdm import tqdm
@@ -213,7 +215,79 @@ def get_coordinates(city, country):
     else:
         raise ValueError(f"Could not find coordinates for {city}, {country}")
 
-def create_poster(city, country, point, dist, output_file):
+def get_marker_coordinates(marker_location, city=None, country=None):
+    """
+    Converts marker location (address or lat,lon) to coordinates.
+    """
+    print(f"Looking up marker location: {marker_location}...")
+    geolocator = Nominatim(user_agent="city_map_poster")
+    time.sleep(1)
+    
+    # Check if it's coordinates (lat,lon format)
+    if ',' in marker_location:
+        try:
+            parts = marker_location.split(',')
+            if len(parts) == 2:
+                lat = float(parts[0].strip())
+                lon = float(parts[1].strip())
+                print(f"✓ Using coordinates: {lat}, {lon}")
+                return (lat, lon)
+        except ValueError:
+            pass  # Not coordinates, treat as address
+    
+    # Geocode as address
+    search_query = marker_location
+    if city and country:
+        search_query = f"{marker_location}, {city}, {country}"
+    
+    location = geolocator.geocode(search_query)
+    if location:
+        print(f"✓ Found marker at: {location.address}")
+        print(f"✓ Coordinates: {location.latitude}, {location.longitude}")
+        return (location.latitude, location.longitude)
+    else:
+        raise ValueError(f"Could not find coordinates for marker: {marker_location}")
+
+def calculate_auto_distance(city, country):
+    """
+    Automatically calculates the appropriate distance to capture the whole city.
+    """
+    print(f"Calculating optimal zoom for {city}, {country}...")
+    geolocator = Nominatim(user_agent="city_map_poster")
+    time.sleep(1)
+    
+    # Get the city boundaries
+    location = geolocator.geocode(f"{city}, {country}", exactly_one=True)
+    if not location:
+        print("⚠ Could not find city, using default distance")
+        return 10000
+    
+    # Try to get the bounding box
+    if hasattr(location, 'raw') and 'boundingbox' in location.raw:
+        bbox = location.raw['boundingbox']
+        # bbox format: [min_lat, max_lat, min_lon, max_lon]
+        min_lat, max_lat, min_lon, max_lon = map(float, bbox)
+        
+        # Calculate rough distances
+        lat_diff = max_lat - min_lat
+        lon_diff = max_lon - min_lon
+        
+        # Convert to approximate meters (rough calculation)
+        # 1 degree latitude ≈ 111km
+        lat_meters = lat_diff * 111000
+        lon_meters = lon_diff * 111000 * np.cos(np.radians((min_lat + max_lat) / 2))
+        
+        # Use the larger dimension and add 20% padding
+        distance = max(lat_meters, lon_meters) * 0.6
+        distance = int(distance)
+        
+        print(f"✓ Auto-calculated distance: {distance}m")
+        return distance
+    else:
+        print("⚠ Could not determine city boundaries, using default distance")
+        return 10000
+
+def create_poster(city, country, point, dist, output_file, marker_point=None, marker_style='star', marker_label=None, marker_color=None):
     print(f"\nGenerating map for {city}, {country}...")
     
     # Progress bar for data fetching
@@ -273,7 +347,80 @@ def create_poster(city, country, point, dist, output_file):
     create_gradient_fade(ax, THEME['gradient_color'], location='bottom', zorder=10)
     create_gradient_fade(ax, THEME['gradient_color'], location='top', zorder=10)
     
-    # 4. Typography using Roboto font
+    # Layer 4: Marker (if provided)
+    if marker_point:
+        marker_lat, marker_lon = marker_point
+        # Use marker color if provided, otherwise use defaults
+        if marker_color:
+            m_color = marker_color
+        elif marker_style == 'star':
+            m_color = '#FFD700'  # Gold/yellow for stars
+        else:
+            m_color = THEME['text']
+        
+        # Define marker styles
+        if marker_style == 'pin':
+            # Custom pin/teardrop shape (like a location pin)
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
+            x_range = xlim[1] - xlim[0]
+            y_range = ylim[1] - ylim[0]
+            
+            # Scale pin size relative to map
+            pin_width = x_range * 0.01
+            pin_height = y_range * 0.015
+            
+            # Create pin shape: circle on top with pointed bottom
+            # Create the circle part
+            circle = mpatches.Circle((marker_lon, marker_lat + pin_height*0.3), 
+                                    pin_width*0.5, facecolor=m_color, 
+                                    edgecolor='white', linewidth=2.5, zorder=12)
+            ax.add_patch(circle)
+            
+            # Create the pointed bottom (triangle)
+            triangle_vertices = [
+                (marker_lon - pin_width*0.35, marker_lat + pin_height*0.05),  # left
+                (marker_lon + pin_width*0.35, marker_lat + pin_height*0.05),  # right
+                (marker_lon, marker_lat - pin_height*0.5),  # bottom point
+            ]
+            triangle = mpatches.Polygon(triangle_vertices, facecolor=m_color, 
+                                       edgecolor='white', linewidth=2.5, zorder=12)
+            ax.add_patch(triangle)
+        else:
+            # Regular markers
+            if marker_style == 'star':
+                marker = '*'
+                marker_size = 500
+            elif marker_style == 'circle':
+                marker = 'o'
+                marker_size = 150
+            elif marker_style == 'dot':
+                marker = '.'
+                marker_size = 300
+            elif marker_style == 'heart':
+                marker = 'H'
+                marker_size = 200
+            else:
+                marker = '*'
+                marker_size = 500
+            
+            ax.scatter(marker_lon, marker_lat, c=m_color, marker=marker, 
+                      s=marker_size, zorder=12, edgecolors='white', linewidths=1.5)
+        
+        # Add label if provided
+        if marker_label:
+            if FONTS:
+                font_marker = FontProperties(fname=FONTS['bold'], size=10)
+            else:
+                font_marker = FontProperties(family='monospace', weight='bold', size=10)
+            
+            ax.text(marker_lon, marker_lat, f'  {marker_label}', 
+                   color=m_color, fontproperties=font_marker, 
+                   zorder=13, ha='left', va='center',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor=THEME['bg'], 
+                            edgecolor=m_color, alpha=0.8, linewidth=1))
+    
+    # 5. Typography using Roboto font
     if FONTS:
         font_main = FontProperties(fname=FONTS['bold'], size=60)
         font_top = FontProperties(fname=FONTS['bold'], size=40)
@@ -316,7 +463,7 @@ def create_poster(city, country, point, dist, output_file):
             color=THEME['text'], alpha=0.5, ha='right', va='bottom', 
             fontproperties=font_attr, zorder=11)
 
-    # 5. Save
+    # 6. Save
     print(f"Saving to {output_file}...")
     plt.savefig(output_file, dpi=300, facecolor=THEME['bg'])
     plt.close()
@@ -419,7 +566,12 @@ Examples:
     parser.add_argument('--city', '-c', type=str, help='City name')
     parser.add_argument('--country', '-C', type=str, help='Country name')
     parser.add_argument('--theme', '-t', type=str, default='feature_based', help='Theme name (default: feature_based)')
-    parser.add_argument('--distance', '-d', type=int, default=29000, help='Map radius in meters (default: 29000)')
+    parser.add_argument('--distance', '-d', type=int, help='Map radius in meters (auto-calculated if not specified with --auto-zoom)')
+    parser.add_argument('--auto-zoom', action='store_true', help='Automatically calculate distance to fit whole city')
+    parser.add_argument('--marker', type=str, help='Marker location (address or "lat,lon")')
+    parser.add_argument('--marker-style', type=str, default='star', choices=['star', 'circle', 'pin', 'dot', 'heart'], help='Marker style (default: star)')
+    parser.add_argument('--marker-label', type=str, help='Optional label for the marker')
+    parser.add_argument('--marker-color', type=str, help='Marker color (hex code, e.g., #FF0000)')
     parser.add_argument('--list-themes', action='store_true', help='List all available themes')
     
     args = parser.parse_args()
@@ -458,7 +610,23 @@ Examples:
     try:
         coords = get_coordinates(args.city, args.country)
         output_file = generate_output_filename(args.city, args.theme)
-        create_poster(args.city, args.country, coords, args.distance, output_file)
+        
+        # Determine distance
+        if args.auto_zoom:
+            distance = calculate_auto_distance(args.city, args.country)
+        elif args.distance:
+            distance = args.distance
+        else:
+            distance = 10000  # Default if neither specified
+        
+        # Process marker if provided
+        marker_coords = None
+        if args.marker:
+            marker_coords = get_marker_coordinates(args.marker, args.city, args.country)
+        
+        create_poster(args.city, args.country, coords, distance, output_file,
+                     marker_point=marker_coords, marker_style=args.marker_style,
+                     marker_label=args.marker_label, marker_color=args.marker_color)
         
         print("\n" + "=" * 50)
         print("✓ Poster generation complete!")
