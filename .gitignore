@@ -3,3 +3,4 @@ env/
 .env/
 posters/*
 !posters/.gitkeep
+.DS_Store
