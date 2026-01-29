@@ -1,6 +1,7 @@
 cache/*
 env/
 .env/
+.venv/
 posters/*
 !posters/.gitkeep
 .DS_Store
